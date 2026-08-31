@@ -1,587 +1,653 @@
-//----Timer Start----
-(function () {
-  const timeEl = document.querySelector('.time');
-  const HOLD_DURATION = 500; // ms
+/**
+ * Speedcubing Timer with Session Management
+ */
 
-  // states: 'idle' | 'holding' | 'ready' | 'running'
-  let state = 'idle';
-  let holdTimeoutId = null;
-  let startTimestamp = null;
-  let rafId = null;
-
-  function formatTime(ms) {
-    const totalSeconds = ms / 1000;
-    return totalSeconds.toFixed(2);
-  }
-
-  function setColor(color) {
-    timeEl.style.color = color;
-  }
-
-  function updateDisplay() {
-    const elapsed = performance.now() - startTimestamp;
-    timeEl.textContent = formatTime(elapsed);
-    rafId = requestAnimationFrame(updateDisplay);
-  }
-
-  function startHolding() {
-    if (state !== 'idle') return;
-    state = 'holding';
-    holdTimeoutId = setTimeout(() => {
-      state = 'ready';
-      setColor('lightgreen');
-    }, HOLD_DURATION);
-
-    // A new solve is starting, so hide the previous solve's action buttons
-    hidePostActions();
-
-    //Increasing font size during running
-
-    timeEl.style.transition = "font-size 0.3s ease-in-out";
-    timeEl.style.fontSize = "25vw";
-
-  }
-
-  function cancelHolding() {
-    // Released before reaching 0.5s -> just go back to idle, no start
-    if (holdTimeoutId) {
-      clearTimeout(holdTimeoutId);
-      holdTimeoutId = null;
-    }
-    state = 'idle';
-    setColor('white');
-  }
-
-  function releaseToStart() {
-    // Called on release when state === 'ready'
-    if (holdTimeoutId) {
-      clearTimeout(holdTimeoutId);
-      holdTimeoutId = null;
-    }
-    state = 'running';
-    setColor('white');
-    startTimestamp = performance.now();
-    rafId = requestAnimationFrame(updateDisplay);
-  }
-
-  function stopTimer() {
-    // Capture the exact elapsed time at the moment of stopping,
-    // so the recorded solve matches what's displayed.
-    const elapsed = performance.now() - startTimestamp;
-
-    state = 'idle';
-    if (rafId) {
-      cancelAnimationFrame(rafId);
-      rafId = null;
-    }
-    setColor('white');
-    timeEl.style.fontSize = '20vw';
-    timeEl.textContent = formatTime(elapsed);
-
-    // Record this solve against the scramble that was used for it,
-    // then generate the next scramble and reveal the edit buttons.
-    recordSolve(elapsed, currentScramble);
-    newScramble();
-    showPostActions();
-  }
-
-  // ---- Handling logic shared by touch/mouse and keyboard ----
-
-  function handlePressStart() {
-    if (state === 'running') {
-      stopTimer();
-    } else if (state === 'idle') {
-      startHolding();
-    }
-    // if state is 'holding' or 'ready' already, ignore (avoids repeat events)
-  }
-
-  function handlePressEnd() {
-    if (state === 'holding') {
-      cancelHolding();
-    } else if (state === 'ready') {
-      releaseToStart();
-    }
-    // if state is 'idle' or 'running', nothing to do on release
-  }
-
-  // Ignore taps/clicks/keys that land on the history or post-solve UI,
-  // so interacting with them doesn't also start/stop the timer.
-  function isControlUI(e) {
-    return e.target.closest('#historyBtn, #historyPanel, #postActions, #sessionBtn, #sessionPanel');
-  }
-
-  // ---- Touch / mouse events ----
-
-  document.addEventListener('touchstart', function (e) {
-    if (isControlUI(e)) return;
-    e.preventDefault();
-    handlePressStart();
-  }, { passive: false });
-
-  document.addEventListener('touchend', function (e) {
-    if (isControlUI(e)) return;
-    e.preventDefault();
-    handlePressEnd();
-  }, { passive: false });
-
-  document.addEventListener('mousedown', function (e) {
-    if (isControlUI(e)) return;
-    handlePressStart();
-  });
-
-  document.addEventListener('mouseup', function (e) {
-    if (isControlUI(e)) return;
-    handlePressEnd();
-  });
-
-  // ---- Keyboard (spacebar) events ----
-
-  document.addEventListener('keydown', function (e) {
-    if (e.code === 'Space' || e.key === ' ') {
-      e.preventDefault();
-      if (e.repeat) return; // ignore held-key auto-repeat
-      handlePressStart();
-    }
-  });
-
-  document.addEventListener('keyup', function (e) {
-    if (e.code === 'Space' || e.key === ' ') {
-      e.preventDefault();
-      handlePressEnd();
-    }
-  });
-})();
-
-//----Scramble Generate----
-const scrambleEl = document.querySelector('.scramble');
+// ==================================================
+// CONSTANTS & CONFIGURATION
+// ==================================================
+const HOLD_DURATION_MS = 500;
 const SCRAMBLE_LENGTH = 20;
-const FACES = ['R', 'L', 'U', 'D', 'F', 'B'];
-const MODIFIERS = ['', "'", '2'];
+const LOCAL_STORAGE_SESSIONS_KEY = "speedcube_sessions_v1";
+const LOCAL_STORAGE_ACTIVE_SESSION_KEY = "speedcube_active_session_id_v1";
 
-// Holds the scramble currently shown on screen, so a finishing solve
-// can be recorded against the scramble it was actually solved with.
-let currentScramble = '';
+const TIMER_STATES = Object.freeze({
+  IDLE: "IDLE",
+  HOLDING: "HOLDING",
+  READY: "READY",
+  RUNNING: "RUNNING",
+  STOPPED: "STOPPED"
+});
 
-function generateScramble() {
-  const moves = [];
-  let lastFace = null;
+const INPUT_SOURCES = Object.freeze({
+  NONE: "NONE",
+  KEYBOARD: "KEYBOARD",
+  TOUCH: "TOUCH",
+  ESP32: "ESP32"
+});
 
-  for (let i = 0; i < SCRAMBLE_LENGTH; i++) {
-    let face;
-    do {
-      face = FACES[Math.floor(Math.random() * FACES.length)];
-    } while (face === lastFace);
+const MOVE_AXIS_MAP = Object.freeze({
+  R: "X", L: "X",
+  U: "Y", D: "Y",
+  F: "Z", B: "Z"
+});
 
-    const modifier = MODIFIERS[Math.floor(Math.random() * MODIFIERS.length)];
-    moves.push(face + modifier);
-    lastFace = face;
-  }
+const FACES = ["R", "L", "U", "D", "F", "B"];
+const MODIFIERS = ["", "'", "2"];
 
-  return moves.join(' ');
+// ==================================================
+// APPLICATION STATE
+// ==================================================
+const state = {
+  currentTimerState: TIMER_STATES.IDLE,
+  activeInputSource: INPUT_SOURCES.NONE,
+  timerStartPerformanceTimestamp: 0,
+  currentSolveElapsedTimeMs: 0,
+  animationFrameRequestId: null,
+  holdTimeoutId: null,
+  currentScrambleText: "",
+  sessions: [],
+  activeSessionId: null
+};
+
+// ==================================================
+// DOM REFERENCES
+// ==================================================
+const dom = {
+  activeSessionBadge: document.getElementById("activeSessionBadge"),
+  scrambleDisplay: document.getElementById("scrambleDisplay"),
+  timerTouchArea: document.getElementById("timerTouchArea"),
+  timerDisplay: document.getElementById("timerDisplay"),
+  solveActionButtons: document.getElementById("solveActionButtons"),
+  deleteSolveButton: document.getElementById("deleteSolveButton"),
+  plusTwoPenaltyButton: document.getElementById("plusTwoPenaltyButton"),
+  dnfPenaltyButton: document.getElementById("dnfPenaltyButton"),
+  bestSolveDisplay: document.getElementById("bestSolveDisplay"),
+  meanSolveDisplay: document.getElementById("meanSolveDisplay"),
+  solveCountDisplay: document.getElementById("solveCountDisplay"),
+  averageOf5Display: document.getElementById("averageOf5Display"),
+  averageOf12Display: document.getElementById("averageOf12Display"),
+  averageOf50Display: document.getElementById("averageOf50Display"),
+  // Session Modal
+  sessionModal: document.getElementById("sessionModal"),
+  openSessionModalButton: document.getElementById("openSessionModalButton"),
+  closeSessionModalButton: document.getElementById("closeSessionModalButton"),
+  newSessionNameInput: document.getElementById("newSessionNameInput"),
+  createSessionButton: document.getElementById("createSessionButton"),
+  sessionList: document.getElementById("sessionList"),
+  // History Modal
+  historyModal: document.getElementById("historyModal"),
+  openHistoryModalButton: document.getElementById("openHistoryModalButton"),
+  closeHistoryModalButton: document.getElementById("closeHistoryModalButton"),
+  modalTotalSolves: document.getElementById("modalTotalSolves"),
+  modalSessionBest: document.getElementById("modalSessionBest"),
+  modalSessionMean: document.getElementById("modalSessionMean"),
+  solveHistoryList: document.getElementById("solveHistoryList"),
+  clearSessionButton: document.getElementById("clearSessionButton")
+};
+
+// ==================================================
+// SESSION HELPERS
+// ==================================================
+function getActiveSession() {
+  return state.sessions.find(s => s.id === state.activeSessionId) || state.sessions[0];
 }
 
-function newScramble() {
-  currentScramble = generateScramble();
-  if (scrambleEl) {
-    scrambleEl.textContent = currentScramble;
-  }
+function getActiveSolves() {
+  const currentSession = getActiveSession();
+  return currentSession ? currentSession.solves : [];
 }
 
-// Ensure the DOM (including .scramble div) is ready before generating
-document.addEventListener('DOMContentLoaded', newScramble);
-
-//----Sessions & Solve History & Stats----
-const SESSIONS_KEY = 'cubeSessions';
-let sessions = [];
-let currentSessionId = null;
-let lastSolveId = null; // id of the most recently recorded solve
-
-function generateId() {
-  return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
-}
-
-function getCurrentSession() {
-  return sessions.find(s => s.id === currentSessionId) || sessions[0];
-}
-
-function saveSessions() {
-  try {
-    localStorage.setItem(SESSIONS_KEY, JSON.stringify({ sessions, currentSessionId }));
-  } catch (e) {
-    // storage full or unavailable - stats still work for this session
-  }
-}
-
-function loadSessions() {
-  try {
-    const raw = JSON.parse(localStorage.getItem(SESSIONS_KEY));
-    if (raw && Array.isArray(raw.sessions) && raw.sessions.length) {
-      sessions = raw.sessions;
-      currentSessionId = raw.currentSessionId || sessions[0].id;
-      return;
-    }
-  } catch (e) {
-    // fall through to fresh/migrated setup below
-  }
-
-  // Migrate solves saved by an older version of this timer (single array,
-  // no sessions) into a first session, so nothing is lost.
-  let migratedSolves = [];
-  try {
-    const old = JSON.parse(localStorage.getItem('cubeSolves'));
-    if (Array.isArray(old)) {
-      migratedSolves = old.map(s => ({ ...s, id: s.id || generateId() }));
-    }
-  } catch (e) {
-    // no old data to migrate
-  }
-  localStorage.removeItem('cubeSolves');
-
-  const firstSession = { id: generateId(), name: 'Session 1', solves: migratedSolves };
-  sessions = [firstSession];
-  currentSessionId = firstSession.id;
-  saveSessions();
-}
-
-loadSessions();
-
-function formatMs(ms) {
-  return (ms / 1000).toFixed(2);
-}
-
-// The time to use for maths: DNF counts as infinitely slow,
-// +2 adds a two second penalty.
-function getEffectiveTime(solve) {
-  if (solve.penalty === 'DNF') return Infinity;
-  if (solve.penalty === '+2') return solve.time + 2000;
-  return solve.time;
-}
-
-// The text to show for a single solve (in history or on the timer).
-function formatSolve(solve) {
-  if (solve.penalty === 'DNF') return 'DNF';
-  const t = getEffectiveTime(solve);
-  return formatMs(t) + (solve.penalty === '+2' ? '+' : '');
-}
-
-// Average of N: take the last N solves, drop the single best and
-// single worst, average what's left. Returns null if not enough solves,
-// Infinity if the result is a DNF average.
-function averageOfN(n) {
-  const solves = getCurrentSession().solves;
-  if (solves.length < n) return null;
-  const lastN = solves.slice(-n).map(getEffectiveTime);
-  const sorted = [...lastN].sort((a, b) => a - b);
-  const trimmed = sorted.slice(1, sorted.length - 1);
-  if (trimmed.some(t => t === Infinity)) return Infinity;
-  const sum = trimmed.reduce((a, b) => a + b, 0);
-  return sum / trimmed.length;
-}
-
-function recordSolve(timeMs, scrambleText) {
-  const solve = {
-    id: generateId(),
-    time: timeMs,
-    scramble: scrambleText,
-    date: Date.now(),
-    penalty: null // null | '+2' | 'DNF'
+function createNewSession(sessionName) {
+  const trimmedName = (sessionName || "").trim();
+  const finalName = trimmedName.length > 0 ? trimmedName : `Session ${state.sessions.length + 1}`;
+  
+  const newSession = {
+    id: "session_" + Date.now(),
+    name: finalName,
+    solves: []
   };
-  getCurrentSession().solves.push(solve);
-  lastSolveId = solve.id;
-  saveSessions();
-  updateStatsUI();
-  renderHistory();
+
+  state.sessions.push(newSession);
+  state.activeSessionId = newSession.id;
+  saveSessionsToLocalStorage();
+  updateSessionUI();
+  updateAllStatisticsUI();
 }
 
-function updateStatsUI() {
-  const statBest = document.getElementById('statBest');
-  const statMean = document.getElementById('statMean');
-  const statCount = document.getElementById('statCount');
-  const statAo5 = document.getElementById('statAo5');
-  const statAo12 = document.getElementById('statAo12');
-  const statAo50 = document.getElementById('statAo50');
-
-  const solves = getCurrentSession().solves;
-  const validTimes = solves
-    .map(getEffectiveTime)
-    .filter(t => t !== Infinity);
-
-  statCount.textContent = solves.length;
-  statBest.textContent = validTimes.length ? formatMs(Math.min(...validTimes)) : '-';
-  statMean.textContent = validTimes.length
-    ? formatMs(validTimes.reduce((a, b) => a + b, 0) / validTimes.length)
-    : '-';
-
-  const ao5 = averageOfN(5);
-  const ao12 = averageOfN(12);
-  const ao50 = averageOfN(50);
-
-  statAo5.textContent = ao5 === null ? '-' : (ao5 === Infinity ? 'DNF' : formatMs(ao5));
-  statAo12.textContent = ao12 === null ? '-' : (ao12 === Infinity ? 'DNF' : formatMs(ao12));
-  statAo50.textContent = ao50 === null ? '-' : (ao50 === Infinity ? 'DNF' : formatMs(ao50));
+function switchSession(sessionId) {
+  state.activeSessionId = sessionId;
+  saveSessionsToLocalStorage();
+  updateSessionUI();
+  updateAllStatisticsUI();
+  hideSolveActionButtons();
+  dom.timerDisplay.textContent = "0.00";
+  state.currentTimerState = TIMER_STATES.IDLE;
+  closeAllModals();
 }
 
-function escapeHtml(str) {
-  return String(str)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;');
-}
-
-function renderHistory() {
-  const listEl = document.getElementById('historyList');
-  if (!listEl) return;
-  const solves = getCurrentSession().solves;
-
-  if (solves.length === 0) {
-    listEl.innerHTML = '<div class="history-empty">No solves yet</div>';
+function deleteSession(sessionId, event) {
+  if (event) event.stopPropagation();
+  if (state.sessions.length <= 1) {
+    alert("You must keep at least one session.");
     return;
   }
 
-  // Newest first
-  const rows = solves
-    .map((s, i) => {
-      return `
-        <div class="history-item" data-id="${s.id}">
-          <div class="history-item-top">
-            <div class="history-item-left">
-              <span class="history-index">#${i + 1}</span>
-              <span class="history-time">${formatSolve(s)}</span>
-            </div>
-            <button class="history-delete-btn" data-id="${s.id}" title="Delete solve">&times;</button>
-          </div>
-          <div class="history-scramble">${escapeHtml(s.scramble)}</div>
-        </div>
-      `;
-    })
-    .reverse();
+  const sessionToDelete = state.sessions.find(s => s.id === sessionId);
+  const confirmed = window.confirm(`Delete "${sessionToDelete.name}" and all its solves?`);
+  if (!confirmed) return;
 
-  listEl.innerHTML = rows.join('');
-}
+  state.sessions = state.sessions.filter(s => s.id !== sessionId);
 
-//----Post-solve action buttons (delete / +2 / DNF)----
-
-function showPostActions() {
-  const postActions = document.getElementById('postActions');
-  if (postActions) postActions.classList.add('visible');
-}
-
-function hidePostActions() {
-  const postActions = document.getElementById('postActions');
-  if (postActions) postActions.classList.remove('visible');
-}
-
-// Deletes any solve by id, from any panel (post-solve buttons or history list).
-function deleteSolveById(id) {
-  const session = getCurrentSession();
-  const idx = session.solves.findIndex(s => s.id === id);
-  if (idx === -1) return;
-  session.solves.splice(idx, 1);
-
-  if (lastSolveId === id) {
-    lastSolveId = null;
-    hidePostActions();
-    const timeEl = document.querySelector('.time');
-    timeEl.style.color = 'white';
-    timeEl.textContent = '0.00';
+  if (state.activeSessionId === sessionId) {
+    state.activeSessionId = state.sessions[0].id;
   }
 
-  saveSessions();
-  updateStatsUI();
-  renderHistory();
+  saveSessionsToLocalStorage();
+  updateSessionUI();
+  updateAllStatisticsUI();
 }
 
-function deleteLastSolve() {
-  if (!lastSolveId) return;
-  deleteSolveById(lastSolveId);
+function updateSessionUI() {
+  const currentSession = getActiveSession();
+  if (!currentSession) return;
+
+  dom.activeSessionBadge.textContent = `Session: ${currentSession.name}`;
+  renderSessionList();
 }
 
-function applyPlus2() {
-  const solve = getCurrentSession().solves.find(s => s.id === lastSolveId);
-  if (!solve || solve.penalty === 'DNF') return;
-  solve.penalty = '+2';
-  saveSessions();
-  updateStatsUI();
-  renderHistory();
-  document.querySelector('.time').textContent = formatSolve(solve);
-}
+function renderSessionList() {
+  dom.sessionList.innerHTML = "";
 
-function applyDNF() {
-  const solve = getCurrentSession().solves.find(s => s.id === lastSolveId);
-  if (!solve) return;
-  solve.penalty = 'DNF';
-  saveSessions();
-  updateStatsUI();
-  renderHistory();
-  document.querySelector('.time').textContent = 'DNF';
-}
-
-//----History panel: open/close + swipe-right-to-close----
-
-function initHistorySwipe() {
-  const panel = document.getElementById('historyPanel');
-  if (!panel) return;
-
-  let startX = null;
-  let currentX = null;
-
-  panel.addEventListener('touchstart', function (e) {
-    startX = e.touches[0].clientX;
-    currentX = startX;
-    panel.style.transition = 'none';
-  }, { passive: true });
-
-  panel.addEventListener('touchmove', function (e) {
-    if (startX === null) return;
-    currentX = e.touches[0].clientX;
-    const deltaX = Math.max(0, currentX - startX);
-    panel.style.transform = `translateX(${deltaX}px)`;
-  }, { passive: true });
-
-  panel.addEventListener('touchend', function () {
-    if (startX === null) return;
-    const deltaX = currentX - startX;
-    panel.style.transition = '';
-    panel.style.transform = '';
-
-    if (deltaX > 80) {
-      panel.classList.remove('open');
-    }
-    startX = null;
-    currentX = null;
-  });
-}
-
-//----Sessions: render, switch, create----
-
-function renderSessions() {
-  const listEl = document.getElementById('sessionList');
-  if (!listEl) return;
-
-  const rows = sessions.map(s => {
-    const active = s.id === currentSessionId ? ' active' : '';
-    return `
-      <div class="session-item${active}" data-id="${s.id}">
-        <span class="session-item-name">${escapeHtml(s.name)}</span>
-        <span class="session-item-count">${s.solves.length} solves</span>
+  state.sessions.forEach(session => {
+    const item = document.createElement("li");
+    item.className = `session-item ${session.id === state.activeSessionId ? "active-session" : ""}`;
+    
+    item.innerHTML = `
+      <div>
+        <span class="session-meta-name">${session.name}</span>
+        <span class="session-meta-count">(${session.solves.length} solves)</span>
       </div>
+      <button class="session-delete-button" title="Delete session">&times;</button>
     `;
+
+    item.addEventListener("click", () => switchSession(session.id));
+    const deleteButton = item.querySelector(".session-delete-button");
+    deleteButton.addEventListener("click", (e) => deleteSession(session.id, e));
+
+    dom.sessionList.appendChild(item);
   });
-
-  listEl.innerHTML = rows.join('');
 }
 
-function switchSession(id) {
-  if (id === currentSessionId) return;
-  currentSessionId = id;
-  lastSolveId = null;
-  hidePostActions();
-  saveSessions();
+// ==================================================
+// SCRAMBLE GENERATOR
+// ==================================================
+function generateScramble() {
+  const moveSequence = [];
+  let previousFace = null;
+  let secondPreviousFace = null;
 
-  const timeEl = document.querySelector('.time');
-  timeEl.style.color = 'white';
-  timeEl.textContent = '0.00';
+  while (moveSequence.length < SCRAMBLE_LENGTH) {
+    const randomFace = FACES[Math.floor(Math.random() * FACES.length)];
+    const randomModifier = MODIFIERS[Math.floor(Math.random() * MODIFIERS.length)];
 
-  updateStatsUI();
-  renderHistory();
-  renderSessions();
-  newScramble(); // fresh scramble to go with the fresh session
+    if (randomFace === previousFace) continue;
+
+    if (secondPreviousFace && previousFace) {
+      const isSameAxisAsPrev = MOVE_AXIS_MAP[randomFace] === MOVE_AXIS_MAP[previousFace];
+      const isSameAxisAsSecPrev = MOVE_AXIS_MAP[randomFace] === MOVE_AXIS_MAP[secondPreviousFace];
+      if (isSameAxisAsPrev && isSameAxisAsSecPrev) continue;
+    }
+
+    moveSequence.push(`${randomFace}${randomModifier}`);
+    secondPreviousFace = previousFace;
+    previousFace = randomFace;
+  }
+
+  return moveSequence.join(" ");
 }
 
-function createNewSession() {
-  const session = {
-    id: generateId(),
-    name: 'Session ' + (sessions.length + 1),
+function updateScrambleUI() {
+  state.currentScrambleText = generateScramble();
+  dom.scrambleDisplay.textContent = state.currentScrambleText;
+}
+
+// ==================================================
+// CORE TIMER LOGIC
+// ==================================================
+function beginHoldToStart() {
+  if (state.currentTimerState === TIMER_STATES.IDLE || state.currentTimerState === TIMER_STATES.STOPPED) {
+    state.currentTimerState = TIMER_STATES.HOLDING;
+    dom.timerDisplay.textContent = "0.00";
+    dom.timerDisplay.className = "timer-display state-holding";
+    hideSolveActionButtons();
+
+    state.holdTimeoutId = setTimeout(() => {
+      if (state.currentTimerState === TIMER_STATES.HOLDING) {
+        state.currentTimerState = TIMER_STATES.READY;
+        dom.timerDisplay.className = "timer-display state-ready";
+      }
+    }, HOLD_DURATION_MS);
+  }
+}
+
+function releaseHoldToStart() {
+  if (state.currentTimerState === TIMER_STATES.HOLDING) {
+    clearTimeout(state.holdTimeoutId);
+    state.currentTimerState = TIMER_STATES.IDLE;
+    dom.timerDisplay.className = "timer-display";
+  } else if (state.currentTimerState === TIMER_STATES.READY) {
+    startTimer();
+  }
+}
+
+function startTimer() {
+  state.currentTimerState = TIMER_STATES.RUNNING;
+  dom.timerDisplay.className = "timer-display";
+  state.timerStartPerformanceTimestamp = performance.now();
+  
+  hideSolveActionButtons();
+  renderTimerLoop();
+}
+
+function stopTimer() {
+  if (state.currentTimerState !== TIMER_STATES.RUNNING) return;
+
+  const stopPerformanceTimestamp = performance.now();
+  cancelAnimationFrame(state.animationFrameRequestId);
+  
+  state.currentSolveElapsedTimeMs = stopPerformanceTimestamp - state.timerStartPerformanceTimestamp;
+  state.currentTimerState = TIMER_STATES.STOPPED;
+
+  const rawSeconds = state.currentSolveElapsedTimeMs / 1000;
+  dom.timerDisplay.textContent = formatTime(rawSeconds);
+
+  recordCompletedSolve(rawSeconds);
+  showSolveActionButtons();
+}
+
+function renderTimerLoop() {
+  if (state.currentTimerState !== TIMER_STATES.RUNNING) return;
+
+  const currentElapsedTime = (performance.now() - state.timerStartPerformanceTimestamp) / 1000;
+  dom.timerDisplay.textContent = formatTime(currentElapsedTime);
+  state.animationFrameRequestId = requestAnimationFrame(renderTimerLoop);
+}
+
+function formatTime(seconds) {
+  if (seconds === Infinity || isNaN(seconds)) return "DNF";
+  return seconds.toFixed(2);
+}
+
+// ==================================================
+// SOLVE & STATS MANAGEMENT (SCOPED TO SESSION)
+// ==================================================
+function recordCompletedSolve(rawSeconds) {
+  const currentSession = getActiveSession();
+  if (!currentSession) return;
+
+  const newSolve = {
+    solveNumber: currentSession.solves.length + 1,
+    rawTime: rawSeconds,
+    penalty: "none",
+    effectiveTime: rawSeconds,
+    scramble: state.currentScrambleText,
+    timestamp: Date.now()
+  };
+
+  currentSession.solves.push(newSolve);
+  saveSessionsToLocalStorage();
+  updateAllStatisticsUI();
+  updateSessionUI();
+  updateScrambleUI();
+}
+
+function applyPenaltyToLatestSolve(penaltyType) {
+  const currentSolves = getActiveSolves();
+  if (currentSolves.length === 0) return;
+
+  const latestSolve = currentSolves[currentSolves.length - 1];
+
+  if (latestSolve.penalty === penaltyType) {
+    latestSolve.penalty = "none";
+    latestSolve.effectiveTime = latestSolve.rawTime;
+  } else {
+    latestSolve.penalty = penaltyType;
+    if (penaltyType === "plus2") {
+      latestSolve.effectiveTime = latestSolve.rawTime + 2.0;
+    } else if (penaltyType === "dnf") {
+      latestSolve.effectiveTime = Infinity;
+    }
+  }
+
+  saveSessionsToLocalStorage();
+  updateAllStatisticsUI();
+  updatePenaltyButtonStyles(latestSolve.penalty);
+
+  if (latestSolve.penalty === "dnf") {
+    dom.timerDisplay.textContent = "DNF";
+  } else {
+    dom.timerDisplay.textContent = formatTime(latestSolve.effectiveTime);
+  }
+}
+
+function deleteLatestSolve() {
+  const currentSession = getActiveSession();
+  if (!currentSession || currentSession.solves.length === 0) return;
+
+  currentSession.solves.pop();
+  saveSessionsToLocalStorage();
+  updateAllStatisticsUI();
+  updateSessionUI();
+  hideSolveActionButtons();
+  dom.timerDisplay.textContent = "0.00";
+  state.currentTimerState = TIMER_STATES.IDLE;
+}
+
+// ==================================================
+// MATHEMATICAL STATS ENGINE
+// ==================================================
+function calculateSessionStatistics() {
+  const solves = getActiveSolves();
+  const count = solves.length;
+  if (count === 0) {
+    return { best: null, mean: null, count: 0, ao5: null, ao12: null, ao50: null };
+  }
+
+  let best = Infinity;
+  let validSolveSum = 0;
+  let validSolveCount = 0;
+
+  for (const solve of solves) {
+    if (solve.penalty !== "dnf") {
+      if (solve.effectiveTime < best) {
+        best = solve.effectiveTime;
+      }
+      validSolveSum += solve.effectiveTime;
+      validSolveCount++;
+    }
+  }
+
+  const mean = validSolveCount > 0 ? validSolveSum / validSolveCount : null;
+  const calculatedBest = best === Infinity ? null : best;
+
+  return {
+    best: calculatedBest,
+    mean: mean,
+    count: count,
+    ao5: calculateAverageOfTrimmedWindow(solves, 5),
+    ao12: calculateAverageOfTrimmedWindow(solves, 12),
+    ao50: calculateAverageOfTrimmedWindow(solves, 50)
+  };
+}
+
+function calculateAverageOfTrimmedWindow(solves, windowSize) {
+  if (solves.length < windowSize) return null;
+
+  const subset = solves.slice(solves.length - windowSize);
+  const effectiveTimes = subset.map(s => s.effectiveTime);
+
+  effectiveTimes.sort((a, b) => a - b);
+
+  const dnfCount = effectiveTimes.filter(t => t === Infinity).length;
+  if (dnfCount >= 2) {
+    return Infinity;
+  }
+
+  const trimmedTimes = effectiveTimes.slice(1, effectiveTimes.length - 1);
+  const sum = trimmedTimes.reduce((acc, current) => acc + current, 0);
+
+  return sum / trimmedTimes.length;
+}
+
+function updateAllStatisticsUI() {
+  const stats = calculateSessionStatistics();
+
+  dom.solveCountDisplay.textContent = stats.count;
+  dom.bestSolveDisplay.textContent = stats.best !== null ? formatTime(stats.best) : "--";
+  dom.meanSolveDisplay.textContent = stats.mean !== null ? formatTime(stats.mean) : "--";
+  dom.averageOf5Display.textContent = stats.ao5 !== null ? formatTime(stats.ao5) : "--";
+  dom.averageOf12Display.textContent = stats.ao12 !== null ? formatTime(stats.ao12) : "--";
+  dom.averageOf50Display.textContent = stats.ao50 !== null ? formatTime(stats.ao50) : "--";
+
+  if (!dom.historyModal.classList.contains("hidden")) {
+    renderHistoryModalContent();
+  }
+}
+
+// ==================================================
+// SOLVE ACTIONS UI
+// ==================================================
+function showSolveActionButtons() {
+  dom.solveActionButtons.classList.remove("hidden");
+  const currentSolves = getActiveSolves();
+  const latestSolve = currentSolves[currentSolves.length - 1];
+  updatePenaltyButtonStyles(latestSolve ? latestSolve.penalty : "none");
+}
+
+function hideSolveActionButtons() {
+  dom.solveActionButtons.classList.add("hidden");
+  updatePenaltyButtonStyles("none");
+}
+
+function updatePenaltyButtonStyles(penalty) {
+  dom.plusTwoPenaltyButton.classList.toggle("action-active", penalty === "plus2");
+  dom.dnfPenaltyButton.classList.toggle("action-active", penalty === "dnf");
+}
+
+// ==================================================
+// MODAL MANAGEMENT
+// ==================================================
+function closeAllModals() {
+  dom.sessionModal.classList.add("hidden");
+  dom.historyModal.classList.add("hidden");
+}
+
+function openSessionModal() {
+  renderSessionList();
+  dom.sessionModal.classList.remove("hidden");
+}
+
+function renderHistoryModalContent() {
+  const stats = calculateSessionStatistics();
+  const currentSolves = getActiveSolves();
+
+  dom.modalTotalSolves.textContent = stats.count;
+  dom.modalSessionBest.textContent = stats.best !== null ? formatTime(stats.best) : "--";
+  dom.modalSessionMean.textContent = stats.mean !== null ? formatTime(stats.mean) : "--";
+
+  dom.solveHistoryList.innerHTML = "";
+
+  for (let index = currentSolves.length - 1; index >= 0; index--) {
+    const solve = currentSolves[index];
+    const listItem = document.createElement("li");
+    listItem.className = "history-entry-item";
+
+    let displayFormattedTime = formatTime(solve.effectiveTime);
+    if (solve.penalty === "plus2") {
+      displayFormattedTime = `${formatTime(solve.effectiveTime)} (+2)`;
+    } else if (solve.penalty === "dnf") {
+      displayFormattedTime = `DNF (${formatTime(solve.rawTime)})`;
+    }
+
+    listItem.innerHTML = `
+      <div class="history-entry-primary">
+        <span>#${solve.solveNumber}</span>
+        <span>${displayFormattedTime}</span>
+      </div>
+      <div class="history-entry-scramble">${solve.scramble}</div>
+    `;
+
+    dom.solveHistoryList.appendChild(listItem);
+  }
+}
+
+function openHistoryModal() {
+  renderHistoryModalContent();
+  dom.historyModal.classList.remove("hidden");
+}
+
+function clearCurrentSession() {
+  const currentSession = getActiveSession();
+  if (!currentSession) return;
+
+  const confirmed = window.confirm(`Clear all solves in "${currentSession.name}"?`);
+  if (confirmed) {
+    currentSession.solves = [];
+    saveSessionsToLocalStorage();
+    updateAllStatisticsUI();
+    updateSessionUI();
+    hideSolveActionButtons();
+    dom.timerDisplay.textContent = "0.00";
+    state.currentTimerState = TIMER_STATES.IDLE;
+    updateScrambleUI();
+    renderHistoryModalContent();
+  }
+}
+
+// ==================================================
+// LOCAL STORAGE PERSISTENCE
+// ==================================================
+function saveSessionsToLocalStorage() {
+  try {
+    localStorage.setItem(LOCAL_STORAGE_SESSIONS_KEY, JSON.stringify(state.sessions));
+    localStorage.setItem(LOCAL_STORAGE_ACTIVE_SESSION_KEY, state.activeSessionId);
+  } catch (error) {
+    console.error("Failed to persist sessions to LocalStorage:", error);
+  }
+}
+
+function loadSessionsFromLocalStorage() {
+  try {
+    const data = localStorage.getItem(LOCAL_STORAGE_SESSIONS_KEY);
+    const activeId = localStorage.getItem(LOCAL_STORAGE_ACTIVE_SESSION_KEY);
+
+    if (data) {
+      const parsedSessions = JSON.parse(data);
+      if (Array.isArray(parsedSessions) && parsedSessions.length > 0) {
+        state.sessions = parsedSessions;
+        state.activeSessionId = activeId || parsedSessions[0].id;
+        return;
+      }
+    }
+  } catch (error) {
+    console.warn("Corrupted session data, initializing new default session:", error);
+  }
+
+  // Fallback initial default session
+  const defaultSession = {
+    id: "session_default",
+    name: "Default",
     solves: []
   };
-  sessions.push(session);
-  switchSession(session.id);
+  state.sessions = [defaultSession];
+  state.activeSessionId = defaultSession.id;
+  saveSessionsToLocalStorage();
 }
 
-function initSessionSwipe() {
-  const panel = document.getElementById('sessionPanel');
-  if (!panel) return;
+// ==================================================
+// INPUT HANDLERS
+// ==================================================
+function isAnyModalOpen() {
+  return !dom.sessionModal.classList.contains("hidden") || !dom.historyModal.classList.contains("hidden");
+}
 
-  let startX = null;
-  let currentX = null;
+function handleKeyboardDown(event) {
+  if (event.code !== "Space" || event.repeat) return;
+  if (isAnyModalOpen()) return;
 
-  panel.addEventListener('touchstart', function (e) {
-    startX = e.touches[0].clientX;
-    currentX = startX;
-    panel.style.transition = 'none';
-  }, { passive: true });
+  event.preventDefault();
 
-  panel.addEventListener('touchmove', function (e) {
-    if (startX === null) return;
-    currentX = e.touches[0].clientX;
-    const deltaX = Math.min(0, currentX - startX);
-    panel.style.transform = `translateX(${deltaX}px)`;
-  }, { passive: true });
+  if (state.activeInputSource === INPUT_SOURCES.TOUCH) return;
+  state.activeInputSource = INPUT_SOURCES.KEYBOARD;
 
-  panel.addEventListener('touchend', function () {
-    if (startX === null) return;
-    const deltaX = currentX - startX;
-    panel.style.transition = '';
-    panel.style.transform = '';
+  if (state.currentTimerState === TIMER_STATES.RUNNING) {
+    stopTimer();
+  } else if (state.currentTimerState === TIMER_STATES.IDLE || state.currentTimerState === TIMER_STATES.STOPPED) {
+    beginHoldToStart();
+  }
+}
 
-    if (deltaX < -80) {
-      panel.classList.remove('open');
+function handleKeyboardUp(event) {
+  if (event.code !== "Space") return;
+  if (state.activeInputSource !== INPUT_SOURCES.KEYBOARD) return;
+
+  event.preventDefault();
+  releaseHoldToStart();
+  state.activeInputSource = INPUT_SOURCES.NONE;
+}
+
+function handleTouchStart(event) {
+  if (isAnyModalOpen()) return;
+  if (event.target.closest("#solveActionButtons")) return;
+
+  if (state.activeInputSource === INPUT_SOURCES.KEYBOARD) return;
+  state.activeInputSource = INPUT_SOURCES.TOUCH;
+
+  if (state.currentTimerState === TIMER_STATES.RUNNING) {
+    stopTimer();
+  } else if (state.currentTimerState === TIMER_STATES.IDLE || state.currentTimerState === TIMER_STATES.STOPPED) {
+    beginHoldToStart();
+  }
+}
+
+function handleTouchEnd(event) {
+  if (event.target.closest("#solveActionButtons")) return;
+  if (state.activeInputSource !== INPUT_SOURCES.TOUCH) return;
+
+  releaseHoldToStart();
+  state.activeInputSource = INPUT_SOURCES.NONE;
+}
+
+// ==================================================
+// INITIALIZATION
+// ==================================================
+function initializeApplication() {
+  loadSessionsFromLocalStorage();
+  updateSessionUI();
+  updateScrambleUI();
+  updateAllStatisticsUI();
+
+  // Keyboard
+  window.addEventListener("keydown", handleKeyboardDown, { passive: false });
+  window.addEventListener("keyup", handleKeyboardUp, { passive: false });
+
+  // Touch / Mouse
+  dom.timerTouchArea.addEventListener("touchstart", handleTouchStart, { passive: true });
+  dom.timerTouchArea.addEventListener("touchend", handleTouchEnd, { passive: true });
+  dom.timerTouchArea.addEventListener("mousedown", handleTouchStart);
+  dom.timerTouchArea.addEventListener("mouseup", handleTouchEnd);
+
+  // Solve Action Buttons
+  dom.deleteSolveButton.addEventListener("click", deleteLatestSolve);
+  dom.plusTwoPenaltyButton.addEventListener("click", () => applyPenaltyToLatestSolve("plus2"));
+  dom.dnfPenaltyButton.addEventListener("click", () => applyPenaltyToLatestSolve("dnf"));
+
+  // Session Manager Controls
+  dom.openSessionModalButton.addEventListener("click", openSessionModal);
+  dom.closeSessionModalButton.addEventListener("click", () => dom.sessionModal.classList.add("hidden"));
+  dom.createSessionButton.addEventListener("click", () => {
+    createNewSession(dom.newSessionNameInput.value);
+    dom.newSessionNameInput.value = "";
+  });
+  dom.newSessionNameInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      createNewSession(dom.newSessionNameInput.value);
+      dom.newSessionNameInput.value = "";
     }
-    startX = null;
-    currentX = null;
+  });
+
+  // History Controls
+  dom.openHistoryModalButton.addEventListener("click", openHistoryModal);
+  dom.closeHistoryModalButton.addEventListener("click", () => dom.historyModal.classList.add("hidden"));
+  dom.clearSessionButton.addEventListener("click", clearCurrentSession);
+
+  // Overlay click dismiss
+  dom.sessionModal.addEventListener("click", (e) => {
+    if (e.target === dom.sessionModal) dom.sessionModal.classList.add("hidden");
+  });
+  dom.historyModal.addEventListener("click", (e) => {
+    if (e.target === dom.historyModal) dom.historyModal.classList.add("hidden");
   });
 }
 
-document.addEventListener('DOMContentLoaded', function () {
-  const historyBtn = document.getElementById('historyBtn');
-  const historyPanel = document.getElementById('historyPanel');
-  const closeHistory = document.getElementById('closeHistory');
-
-  const sessionBtn = document.getElementById('sessionBtn');
-  const sessionPanel = document.getElementById('sessionPanel');
-  const closeSession = document.getElementById('closeSession');
-
-  historyBtn.addEventListener('click', function () {
-    sessionPanel.classList.remove('open');
-    historyPanel.classList.add('open');
-  });
-
-  closeHistory.addEventListener('click', function () {
-    historyPanel.classList.remove('open');
-  });
-
-  sessionBtn.addEventListener('click', function () {
-    historyPanel.classList.remove('open');
-    renderSessions();
-    sessionPanel.classList.add('open');
-  });
-
-  closeSession.addEventListener('click', function () {
-    sessionPanel.classList.remove('open');
-  });
-
-  document.getElementById('sessionList').addEventListener('click', function (e) {
-    const item = e.target.closest('.session-item');
-    if (!item) return;
-    switchSession(item.dataset.id);
-  });
-
-  document.getElementById('newSessionBtn').addEventListener('click', createNewSession);
-
-  document.getElementById('historyList').addEventListener('click', function (e) {
-    const btn = e.target.closest('.history-delete-btn');
-    if (!btn) return;
-    deleteSolveById(btn.dataset.id);
-  });
-
-  document.getElementById('btnDelete').addEventListener('click', deleteLastSolve);
-  document.getElementById('btnPlus2').addEventListener('click', applyPlus2);
-  document.getElementById('btnDNF').addEventListener('click', applyDNF);
-
-  initHistorySwipe();
-  initSessionSwipe();
-  updateStatsUI();
-  renderHistory();
-  renderSessions();
-});
+document.addEventListener("DOMContentLoaded", initializeApplication);
