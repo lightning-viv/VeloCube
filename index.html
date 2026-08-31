@@ -1,70 +1,122 @@
 <!DOCTYPE html>
-<html>
-
+<html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>VeloCube</title>
-  <link rel="stylesheet" href="timer.css">
-
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>Speedcubing Timer</title>
+  <link rel="stylesheet" href="style.css" />
 </head>
 <body>
-  <div class="scramble-body">
-    <div class="scramble"></div>
-  </div>
+  <div id="applicationContainer" class="application-container">
+    
+    <!-- Top Bar: Scramble Display & Active Session Badge -->
+    <header class="header-section">
+      <div id="activeSessionBadge" class="active-session-badge">Session: Default</div>
+      <div id="scrambleDisplay" class="scramble-display">Loading scramble...</div>
+    </header>
 
-  <div class="mainbody">
-    <div class="timer-wrap">
-      <div class="time">0.00</div>
+    <!-- Main Central Area: Timer Display and Action Buttons -->
+    <main id="timerTouchArea" class="timer-touch-area">
+      <div class="timer-wrapper">
+        <div id="timerDisplay" class="timer-display">0.00</div>
+        
+        <!-- Post-Solve Quick Action Buttons -->
+        <div id="solveActionButtons" class="solve-action-buttons hidden">
+          <button id="deleteSolveButton" class="action-button action-button-delete" type="button" aria-label="Delete solve">X</button>
+          <button id="plusTwoPenaltyButton" class="action-button" type="button" aria-label="Add 2 seconds">+2</button>
+          <button id="dnfPenaltyButton" class="action-button" type="button" aria-label="Did Not Finish">DNF</button>
+        </div>
+      </div>
+    </main>
 
-      <!-- Post-solve action buttons: shown once the timer stops -->
-      <div class="post-actions" id="postActions">
-        <button id="btnDelete" class="post-btn delete-btn" title="Delete solve">&times;</button>
-        <button id="btnPlus2" class="post-btn plus2-btn" title="Add 2 second penalty">+2</button>
-        <button id="btnDNF" class="post-btn dnf-btn" title="Mark as DNF">DNF</button>
+    <!-- Bottom Dashboard: Statistics, Session Switcher & History Navigation -->
+    <footer class="statistics-dashboard">
+      <!-- Left Statistics Column -->
+      <div class="statistics-column statistics-column-left">
+        <div class="statistic-item">
+          <span class="statistic-label">Best:</span>
+          <span id="bestSolveDisplay" class="statistic-value">--</span>
+        </div>
+        <div class="statistic-item">
+          <span class="statistic-label">Mean:</span>
+          <span id="meanSolveDisplay" class="statistic-value">--</span>
+        </div>
+        <div class="statistic-item">
+          <span class="statistic-label">Count:</span>
+          <span id="solveCountDisplay" class="statistic-value">0</span>
+        </div>
+      </div>
+
+      <!-- Center Action: Session & History Buttons -->
+      <div class="statistics-column statistics-column-center">
+        <button id="openSessionModalButton" class="dashboard-action-button session-toggle-button" type="button">Sessions</button>
+        <button id="openHistoryModalButton" class="dashboard-action-button history-toggle-button" type="button">History</button>
+      </div>
+
+      <!-- Right Statistics Column -->
+      <div class="statistics-column statistics-column-right">
+        <div class="statistic-item">
+          <span class="statistic-label">Ao5:</span>
+          <span id="averageOf5Display" class="statistic-value">--</span>
+        </div>
+        <div class="statistic-item">
+          <span class="statistic-label">Ao12:</span>
+          <span id="averageOf12Display" class="statistic-value">--</span>
+        </div>
+        <div class="statistic-item">
+          <span class="statistic-label">Ao50:</span>
+          <span id="averageOf50Display" class="statistic-value">--</span>
+        </div>
+      </div>
+    </footer>
+
+    <!-- Sessions Management Modal -->
+    <div id="sessionModal" class="modal-overlay hidden" role="dialog" aria-modal="true">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h2 class="modal-title">Manage Sessions</h2>
+          <button id="closeSessionModalButton" class="modal-close-button" type="button" aria-label="Close sessions">&times;</button>
+        </div>
+
+        <div class="modal-body">
+          <div class="session-creator-bar">
+            <input type="text" id="newSessionNameInput" class="session-input" placeholder="New session name..." maxlength="25" />
+            <button id="createSessionButton" class="action-button" type="button">Create</button>
+          </div>
+
+          <div class="modal-list-container">
+            <ul id="sessionList" class="session-list"></ul>
+          </div>
+        </div>
       </div>
     </div>
-  </div>
 
-  <!-- Bottom-left stats -->
-  <div class="stats stats-left">
-    <div class="stat"><span class="stat-label">Best</span><span class="stat-value" id="statBest">-</span></div>
-    <div class="stat"><span class="stat-label">Mean</span><span class="stat-value" id="statMean">-</span></div>
-    <div class="stat"><span class="stat-label">Count</span><span class="stat-value" id="statCount">0</span></div>
-  </div>
+    <!-- Solve History Modal -->
+    <div id="historyModal" class="modal-overlay hidden" role="dialog" aria-modal="true">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h2 class="modal-title">Session History</h2>
+          <button id="closeHistoryModalButton" class="modal-close-button" type="button" aria-label="Close history">&times;</button>
+        </div>
 
-  <!-- Bottom-right stats -->
-  <div class="stats stats-right">
-    <div class="stat"><span class="stat-label">Ao5</span><span class="stat-value" id="statAo5">-</span></div>
-    <div class="stat"><span class="stat-label">Ao12</span><span class="stat-value" id="statAo12">-</span></div>
-    <div class="stat"><span class="stat-label">Ao50</span><span class="stat-value" id="statAo50">-</span></div>
-  </div>
+        <div class="modal-summary">
+          <div class="summary-item">Total Solves: <span id="modalTotalSolves">0</span></div>
+          <div class="summary-item">Session Best: <span id="modalSessionBest">--</span></div>
+          <div class="summary-item">Session Mean: <span id="modalSessionMean">--</span></div>
+        </div>
 
-  <!-- Session button (above History button) -->
-  <button id="sessionBtn" class="session-btn">Session</button>
+        <div class="modal-list-container">
+          <ol id="solveHistoryList" class="solve-history-list"></ol>
+        </div>
 
-  <!-- History button -->
-  <button id="historyBtn" class="history-btn">History</button>
-
-  <!-- History panel -->
-  <div id="historyPanel" class="history-panel">
-    <div class="history-header">
-      <h2>Solve History</h2>
-      <button id="closeHistory" class="close-btn">&times;</button>
+        <div class="modal-footer">
+          <button id="clearSessionButton" class="clear-session-button" type="button">Clear Current Session</button>
+        </div>
+      </div>
     </div>
-    <div id="historyList" class="history-list"></div>
+
   </div>
 
-  <!-- Session panel -->
-  <div id="sessionPanel" class="session-panel">
-    <div class="history-header">
-      <h2>Sessions</h2>
-      <button id="closeSession" class="close-btn">&times;</button>
-    </div>
-    <div id="sessionList" class="session-list"></div>
-    <button id="newSessionBtn" class="new-session-btn">+ New Session</button>
-  </div>
-
-  <script src="timer.js"></script>
+  <script src="script.js"></script>
 </body>
 </html>
